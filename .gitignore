@@ -4,3 +4,6 @@ Source/env/robots/.data/
 **/robocode.dll
 **/robot.database
 Source/env/robots/MyTeam.dll
+Project/bin/
+env/config/robocode.properties
+env/config/window.properties
