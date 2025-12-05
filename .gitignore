@@ -7,3 +7,5 @@ Source/env/robots/MyTeam.dll
 Project/bin/
 env/config/robocode.properties
 env/config/window.properties
+.vscode
+.claude
