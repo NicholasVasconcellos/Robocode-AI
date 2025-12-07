@@ -33,7 +33,8 @@ public class PotatoBot extends TeamRobot {
     private static final double BULLET_SPEED_COEFFICIENT = 3.0;
     
     // Movement parameters
-    private static final double WALL_MARGIN = 180.0;        // Distance from wall to start turning (increased)
+    private static final double WALL_MARGIN = 250.0;        // Distance from wall to start turning
+    private static final double WALL_DANGER_MARGIN = 100.0; // Critical distance - emergency turn
     private static final double ZIG_ZAG_AMPLITUDE = 30.0;   // Degrees for zig-zag pattern
     private static final double ZIG_ZAG_FREQUENCY = 20;     // Turns between direction changes
     
@@ -59,6 +60,8 @@ public class PotatoBot extends TeamRobot {
     private int moveDirection = 1;      // 1 = forward, -1 = backward
     private int turnDirection = 1;      // 1 = right, -1 = left
     private long zigZagTimer = 0;       // Timer for zig-zag pattern
+    private long wallDangerTimer = 0;   // Timer for wall avoidance persistence
+    private int wallAvoidDirection = 0; // Locked wall avoidance direction (0 = none)
     
     // Enemy tracking
     private final Map<String, EnemyBot> enemies = new HashMap<>();
@@ -229,11 +232,47 @@ public class PotatoBot extends TeamRobot {
             updateTargeting();
             attemptSnipe();
             
-            // Radar sweep
-            setTurnRadarRight(360);
+            // Smart radar control
+            executeRadarStrategy();
             
             execute();
         }
+    }
+    
+    /**
+     * Smart radar strategy:
+     * - Lock onto current target if we have one
+     * - Wide sweep if no targets or lost track
+     */
+    private void executeRadarStrategy() {
+        if (currentTarget != null && getTime() - currentTarget.lastSeenTime < 5) {
+            // We have a recent target - narrow lock
+            narrowRadarLock(currentTarget);
+        } else {
+            // No target or stale data - wide sweep
+            setTurnRadarRight(360);
+        }
+    }
+    
+    /**
+     * Narrow radar lock on target using 2.0 multiplier trick
+     * Oscillates radar to maintain lock
+     */
+    private void narrowRadarLock(EnemyBot target) {
+        // Calculate absolute bearing to target
+        double absoluteBearing = Math.atan2(
+            target.position.x - getX(),
+            target.position.y - getY()
+        );
+        
+        // Calculate radar turn needed
+        double radarTurn = Utils.normalRelativeAngle(
+            absoluteBearing - getRadarHeadingRadians()
+        );
+        
+        // 2.0 multiplier ensures we scan past the target and back
+        // This maintains lock even if target moves slightly
+        setTurnRadarRightRadians(2.0 * radarTurn);
     }
     
     // ========== MOVEMENT SYSTEM ==========
@@ -270,33 +309,57 @@ public class PotatoBot extends TeamRobot {
      * Execute vibing movement: zig-zag evasive pattern with wall avoidance
      */
     private void executeVibingMovement() {
-        // Zig-zag pattern: change direction periodically
-        if (getTime() - zigZagTimer > ZIG_ZAG_FREQUENCY) {
-            zigZagTimer = getTime();
-            
-            // 10% chance to reverse turn direction (adds unpredictability)
-            if (random.nextDouble() < 0.10) {
-                turnDirection *= -1;
-            }
-        }
-        
-        // Wall avoidance with smooth reflection
+        // Check for wall danger
         WallAvoidanceResult wallAvoid = calculateWallAvoidance();
         
         if (wallAvoid.shouldTurn) {
-            // PRIORITY: Wall avoidance overrides everything
-            turnDirection = wallAvoid.suggestedDirection;
+            // CRITICAL: Wall avoidance has absolute priority
             
-            // Aggressive wall avoidance
-            setMaxVelocity(MAX_VELOCITY * 0.5);  // Slow down significantly
-            setTurnRight(wallAvoid.suggestedTurnAmount);
-            setAhead(100 * moveDirection);  // Finite movement, not infinite
+            // Lock in wall avoidance direction for at least 10 turns
+            if (wallAvoidDirection == 0 || getTime() - wallDangerTimer > 10) {
+                wallAvoidDirection = wallAvoid.suggestedDirection;
+                wallDangerTimer = getTime();
+                out.println("WALL DANGER: Locked direction=" + wallAvoidDirection);
+            }
+            
+            // Emergency mode if very close
+            if (wallAvoid.emergency) {
+                // STOP and turn sharply
+                setMaxVelocity(0);
+                setTurnRight(90 * wallAvoidDirection);
+                setBack(50);  // Back away from wall
+                out.println("EMERGENCY WALL AVOIDANCE!");
+            } else {
+                // Normal wall avoidance - smooth turn away
+                setMaxVelocity(MAX_VELOCITY * 0.4);
+                setTurnRight(wallAvoid.suggestedTurnAmount * wallAvoidDirection);
+                setAhead(50 * moveDirection);
+            }
         } else {
-            // Normal zig-zag movement
+            // Clear wall danger if we're safe
+            if (getTime() - wallDangerTimer > 15) {
+                wallAvoidDirection = 0;
+            }
+            
+            // Zig-zag pattern: change direction periodically
+            if (getTime() - zigZagTimer > ZIG_ZAG_FREQUENCY) {
+                zigZagTimer = getTime();
+                
+                // 10% chance to reverse turn direction (adds unpredictability)
+                if (random.nextDouble() < 0.10) {
+                    turnDirection *= -1;
+                }
+            }
+            
+            // Normal zig-zag movement - SMOOTH
             setMaxVelocity(MAX_VELOCITY);
-            double zigZagAngle = ZIG_ZAG_AMPLITUDE * Math.sin(getTime() / ZIG_ZAG_FREQUENCY);
-            setTurnRight(zigZagAngle * turnDirection);
-            setAhead(100 * moveDirection);  // Move in chunks, not infinite
+            
+            // Smooth sine wave with dampening
+            double phase = (getTime() % ZIG_ZAG_FREQUENCY) / ZIG_ZAG_FREQUENCY;
+            double smoothAngle = ZIG_ZAG_AMPLITUDE * Math.sin(2 * Math.PI * phase);
+            
+            setTurnRight(smoothAngle * turnDirection);
+            setAhead(100 * moveDirection);
         }
     }
     
@@ -352,33 +415,59 @@ public class PotatoBot extends TeamRobot {
         
         WallAvoidanceResult result = new WallAvoidanceResult();
         
-        // Check proximity and heading toward each wall
-        if (x < WALL_MARGIN && isHeadingToward(270, effectiveHeading)) {
-            // Too close to left wall, turn right
+        // Calculate distances to all walls
+        double distToLeft = x;
+        double distToRight = fieldWidth - x;
+        double distToBottom = y;
+        double distToTop = fieldHeight - y;
+        
+        // Find closest wall
+        double minDist = Math.min(Math.min(distToLeft, distToRight), 
+                                  Math.min(distToBottom, distToTop));
+        
+        // Emergency if very close to any wall
+        if (minDist < WALL_DANGER_MARGIN) {
+            result.emergency = true;
             result.shouldTurn = true;
-            result.suggestedDirection = 1;
-            result.suggestedTurnAmount = calculateWallReflectionAngle(x, WALL_MARGIN, 270, effectiveHeading);
-        } 
-        else if (x > fieldWidth - WALL_MARGIN && isHeadingToward(90, effectiveHeading)) {
-            // Too close to right wall, turn left
+            
+            // Determine which wall and turn away
+            if (minDist == distToLeft) {
+                result.suggestedDirection = 1;  // Turn right
+                result.suggestedTurnAmount = 90;
+            } else if (minDist == distToRight) {
+                result.suggestedDirection = -1; // Turn left
+                result.suggestedTurnAmount = 90;
+            } else if (minDist == distToBottom) {
+                result.suggestedDirection = effectiveHeading < 180 ? -1 : 1;
+                result.suggestedTurnAmount = 90;
+            } else { // distToTop
+                result.suggestedDirection = effectiveHeading > 180 ? -1 : 1;
+                result.suggestedTurnAmount = 90;
+            }
+            
+            return result;
+        }
+        
+        // Normal wall avoidance - check if heading toward wall
+        if (distToLeft < WALL_MARGIN && isHeadingToward(270, effectiveHeading)) {
             result.shouldTurn = true;
-            result.suggestedDirection = -1;
-            result.suggestedTurnAmount = -calculateWallReflectionAngle(
-                fieldWidth - x, WALL_MARGIN, 90, effectiveHeading);
+            result.suggestedDirection = 1;  // Turn right
+            result.suggestedTurnAmount = calculateWallReflectionAngle(distToLeft, WALL_MARGIN);
         } 
-        else if (y < WALL_MARGIN && isHeadingToward(180, effectiveHeading)) {
-            // Too close to bottom wall, turn away
+        else if (distToRight < WALL_MARGIN && isHeadingToward(90, effectiveHeading)) {
+            result.shouldTurn = true;
+            result.suggestedDirection = -1; // Turn left
+            result.suggestedTurnAmount = calculateWallReflectionAngle(distToRight, WALL_MARGIN);
+        } 
+        else if (distToBottom < WALL_MARGIN && isHeadingToward(180, effectiveHeading)) {
             result.shouldTurn = true;
             result.suggestedDirection = effectiveHeading < 180 ? 1 : -1;
-            result.suggestedTurnAmount = calculateWallReflectionAngle(
-                y, WALL_MARGIN, 180, effectiveHeading) * result.suggestedDirection;
+            result.suggestedTurnAmount = calculateWallReflectionAngle(distToBottom, WALL_MARGIN);
         } 
-        else if (y > fieldHeight - WALL_MARGIN && isHeadingToward(0, effectiveHeading)) {
-            // Too close to top wall, turn away
+        else if (distToTop < WALL_MARGIN && isHeadingToward(0, effectiveHeading)) {
             result.shouldTurn = true;
             result.suggestedDirection = effectiveHeading > 180 ? 1 : -1;
-            result.suggestedTurnAmount = calculateWallReflectionAngle(
-                fieldHeight - y, WALL_MARGIN, 0, effectiveHeading) * result.suggestedDirection;
+            result.suggestedTurnAmount = calculateWallReflectionAngle(distToTop, WALL_MARGIN);
         }
         
         return result;
@@ -388,20 +477,20 @@ public class PotatoBot extends TeamRobot {
      * Calculate smooth reflection angle away from wall
      * Returns larger angle when closer to wall
      */
-    private double calculateWallReflectionAngle(double distToWall, double margin, 
-                                                 double wallAngle, double heading) {
+    private double calculateWallReflectionAngle(double distToWall, double margin) {
         // Intensity increases as we get closer (0 = far, 1 = at wall)
         double intensity = 1.0 - (distToWall / margin);
         intensity = Math.max(0, Math.min(1, intensity));
         
         // Base angle increases with proximity
-        double baseAngle = 20 + (70 * intensity);  // 20° to 90°
+        double baseAngle = 30 + (60 * intensity);  // 30° to 90°
         
         return baseAngle;
     }
     
     private static class WallAvoidanceResult {
         boolean shouldTurn = false;
+        boolean emergency = false;  // Critical danger
         int suggestedDirection = 1;
         double suggestedTurnAmount = 0;
     }
@@ -734,11 +823,21 @@ public class PotatoBot extends TeamRobot {
     
     @Override
     public void onHitWall(HitWallEvent e) {
-        // Emergency: reverse both directions
+        // EMERGENCY: We hit a wall despite avoidance
+        out.println("WALL HIT! Emergency reverse");
+        
+        // Stop wall danger timer to allow new direction
+        wallAvoidDirection = 0;
+        wallDangerTimer = 0;
+        
+        // Reverse move direction and turn sharply
         moveDirection *= -1;
         turnDirection *= -1;
-        setBack(100);
-        out.println("Wall hit - emergency reverse");
+        
+        // Back away from wall immediately
+        setMaxVelocity(MAX_VELOCITY);
+        setBack(150);
+        setTurnRight(90 * turnDirection);
     }
     
     @Override
