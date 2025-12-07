@@ -33,13 +33,13 @@ public class PotatoBot extends TeamRobot {
     private static final double BULLET_SPEED_COEFFICIENT = 3.0;
     
     // Movement parameters
-    private static final double WALL_MARGIN = 150.0;        // Distance from wall to start turning
+    private static final double WALL_MARGIN = 180.0;        // Distance from wall to start turning (increased)
     private static final double ZIG_ZAG_AMPLITUDE = 30.0;   // Degrees for zig-zag pattern
     private static final double ZIG_ZAG_FREQUENCY = 20;     // Turns between direction changes
     
     // Targeting parameters
     private static final int PREDICTION_FRAMES = 5;         // Frames to predict ahead
-    private static final double MIN_SNIPE_CONFIDENCE = 0.7; // Minimum hit probability
+    private static final double MIN_SNIPE_CONFIDENCE = 0.5; // Minimum hit probability (lowered from 0.7)
     private static final int MAX_SNIPE_TIME = 50;          // Max turns to consider for sniping
     
     // Kill mode parameters
@@ -213,9 +213,6 @@ public class PotatoBot extends TeamRobot {
         setAdjustGunForRobotTurn(true);
         setAdjustRadarForGunTurn(true);
         
-        // Initialize movement
-        initializeMovement();
-        
         // Main loop
         while (true) {
             // Update state machine
@@ -242,14 +239,6 @@ public class PotatoBot extends TeamRobot {
     // ========== MOVEMENT SYSTEM ==========
     
     /**
-     * Initialize smooth circular movement
-     */
-    private void initializeMovement() {
-        setAhead(Double.POSITIVE_INFINITY * moveDirection);
-        setTurnRight(5 * turnDirection);  // Start with gentle turn
-    }
-    
-    /**
      * Update movement state based on enemy analysis
      */
     private void updateMovementState() {
@@ -273,7 +262,6 @@ public class PotatoBot extends TeamRobot {
                 currentState = MovementState.VIBING;
                 killTarget = null;
                 out.println("Exiting KILL MODE - returning to vibing");
-                initializeMovement();
             }
         }
     }
@@ -296,27 +284,20 @@ public class PotatoBot extends TeamRobot {
         WallAvoidanceResult wallAvoid = calculateWallAvoidance();
         
         if (wallAvoid.shouldTurn) {
-            // Smoothly curve away from wall
+            // PRIORITY: Wall avoidance overrides everything
             turnDirection = wallAvoid.suggestedDirection;
             
-            // Reduce speed if turning sharply
-            double turnAmount = Math.abs(wallAvoid.suggestedTurnAmount);
-            if (turnAmount > 45) {
-                setMaxVelocity(MAX_VELOCITY * 0.6);  // Slow down for sharp turns
-            } else {
-                setMaxVelocity(MAX_VELOCITY);  // Full speed for gentle turns
-            }
-            
+            // Aggressive wall avoidance
+            setMaxVelocity(MAX_VELOCITY * 0.5);  // Slow down significantly
             setTurnRight(wallAvoid.suggestedTurnAmount);
+            setAhead(100 * moveDirection);  // Finite movement, not infinite
         } else {
             // Normal zig-zag movement
             setMaxVelocity(MAX_VELOCITY);
             double zigZagAngle = ZIG_ZAG_AMPLITUDE * Math.sin(getTime() / ZIG_ZAG_FREQUENCY);
             setTurnRight(zigZagAngle * turnDirection);
+            setAhead(100 * moveDirection);  // Move in chunks, not infinite
         }
-        
-        // Maintain forward movement
-        setAhead(Double.POSITIVE_INFINITY * moveDirection);
     }
     
     /**
@@ -471,20 +452,13 @@ public class PotatoBot extends TeamRobot {
     private SnipeOpportunity calculateBestSnipe(EnemyBot enemy) {
         SnipeOpportunity best = null;
         
-        // Try different power levels
-        for (double power = 0.1; power <= 3.0; power += 0.1) {
-            power = Math.round(power * 10) / 10.0;  // Round to 1 decimal
+        // Try different power levels (fewer steps for performance)
+        for (double power = 0.5; power <= 3.0; power += 0.5) {
+            SnipeOpportunity snipe = checkSnipe(enemy, power);
             
-            // Try each prediction frame
-            for (int frame = 0; frame < PREDICTION_FRAMES; frame++) {
-                if (enemy.predictedPositions[frame] == null) continue;
-                
-                SnipeOpportunity snipe = checkSnipe(enemy, frame, power);
-                
-                if (snipe != null && snipe.confidence >= MIN_SNIPE_CONFIDENCE) {
-                    if (best == null || snipe.isBetterThan(best)) {
-                        best = snipe;
-                    }
+            if (snipe != null && snipe.confidence >= MIN_SNIPE_CONFIDENCE) {
+                if (best == null || snipe.isBetterThan(best)) {
+                    best = snipe;
                 }
             }
         }
@@ -493,59 +467,118 @@ public class PotatoBot extends TeamRobot {
     }
     
     /**
-     * Check if we can snipe enemy at predicted frame with given power
+     * Check if we can snipe enemy with given power
+     * Uses iterative prediction to find intercept point
      * 
      * Algorithm:
-     * 1. Calculate bullet travel time to predicted position
-     * 2. Calculate gun turn time to aim at position
-     * 3. Total time = gun turn time + bullet travel time
-     * 4. Check if total time ≈ frame number (within tolerance)
-     * 5. Calculate hit confidence based on timing accuracy
+     * 1. Start with current enemy position
+     * 2. Calculate bullet travel time to that position
+     * 3. Predict where enemy will be at that time
+     * 4. Recalculate with new position
+     * 5. Repeat until convergence
      */
-    private SnipeOpportunity checkSnipe(EnemyBot enemy, int predictionFrame, double power) {
-        Point2D.Double targetPos = enemy.predictedPositions[predictionFrame];
+    private SnipeOpportunity checkSnipe(EnemyBot enemy, double power) {
+        if (enemy.predictedPositions[0] == null) {
+            return null;  // No prediction available
+        }
         
-        // Calculate bullet speed and travel time
         double bulletSpeed = BULLET_SPEED_BASE - BULLET_SPEED_COEFFICIENT * power;
-        double distance = Point2D.distance(getX(), getY(), targetPos.x, targetPos.y);
-        double bulletTravelTime = distance / bulletSpeed;
         
-        // Calculate gun turn time
-        double aimAngle = Math.atan2(targetPos.x - getX(), targetPos.y - getY());
-        double gunTurnNeeded = Math.abs(Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians()));
-        double gunTurnTime = gunTurnNeeded / GUN_TURN_RATE_RADIANS;
+        // Iterative prediction
+        Point2D.Double targetPos = enemy.position;
+        double totalTime = 0;
         
-        // Total time from now until bullet reaches predicted position
-        double totalTime = gunTurnTime + bulletTravelTime;
-        
-        // Check if timing aligns with prediction frame (with tolerance)
-        double timingError = Math.abs(totalTime - predictionFrame);
-        
-        if (timingError > 3.0) {  // More than 3 turns off
-            return null;  // Poor timing
+        for (int iteration = 0; iteration < 10; iteration++) {
+            // Calculate time for bullet to reach current predicted position
+            double distance = Point2D.distance(getX(), getY(), targetPos.x, targetPos.y);
+            double bulletTime = distance / bulletSpeed;
+            
+            // Calculate gun turn time
+            double aimAngle = Math.atan2(targetPos.x - getX(), targetPos.y - getY());
+            double gunTurnNeeded = Math.abs(Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians()));
+            double gunTurnTime = gunTurnNeeded / GUN_TURN_RATE_RADIANS;
+            
+            double newTotalTime = gunTurnTime + bulletTime;
+            
+            // Check convergence
+            if (Math.abs(newTotalTime - totalTime) < 0.5) {
+                // Converged! Check if this is a good shot
+                
+                // Don't shoot if too far in future or gun needs huge turn
+                if (newTotalTime > MAX_SNIPE_TIME || gunTurnNeeded > Math.toRadians(90)) {
+                    return null;
+                }
+                
+                // Calculate confidence
+                double confidence = 1.0;
+                
+                // Penalize large gun turns
+                if (gunTurnNeeded > Math.toRadians(45)) {
+                    confidence *= 0.7;
+                }
+                
+                // Penalize long distances
+                if (distance > 400) {
+                    confidence *= 0.8;
+                }
+                
+                // Penalize long time (more prediction error)
+                if (newTotalTime > 20) {
+                    confidence *= 0.9;
+                }
+                
+                // Boost if enemy has low velocity (easier to predict)
+                if (Math.abs(enemy.velocity) < 2) {
+                    confidence *= 1.2;
+                }
+                
+                confidence = Math.min(1.0, confidence);
+                
+                if (confidence < MIN_SNIPE_CONFIDENCE) {
+                    return null;
+                }
+                
+                return new SnipeOpportunity(
+                    enemy,
+                    (int) Math.round(newTotalTime),
+                    power,
+                    aimAngle,
+                    (int) Math.ceil(newTotalTime),
+                    confidence
+                );
+            }
+            
+            totalTime = newTotalTime;
+            
+            // Predict enemy position at total time
+            int wholeTurns = (int) Math.floor(totalTime);
+            double fraction = totalTime - wholeTurns;
+            
+            // Use whole turn prediction if available
+            if (wholeTurns < PREDICTION_FRAMES && enemy.predictedPositions[wholeTurns] != null) {
+                targetPos = enemy.predictedPositions[wholeTurns];
+                
+                // Interpolate if needed
+                if (fraction > 0.1 && wholeTurns + 1 < PREDICTION_FRAMES && 
+                    enemy.predictedPositions[wholeTurns + 1] != null) {
+                    Point2D.Double next = enemy.predictedPositions[wholeTurns + 1];
+                    targetPos = new Point2D.Double(
+                        targetPos.x + (next.x - targetPos.x) * fraction,
+                        targetPos.y + (next.y - targetPos.y) * fraction
+                    );
+                }
+            } else {
+                // Extrapolate linearly if beyond prediction range
+                double heading = Math.toRadians(enemy.heading);
+                targetPos = new Point2D.Double(
+                    enemy.position.x + enemy.velocity * Math.sin(heading) * totalTime,
+                    enemy.position.y + enemy.velocity * Math.cos(heading) * totalTime
+                );
+            }
         }
         
-        // Calculate confidence (1.0 = perfect, decreases with timing error)
-        double confidence = 1.0 - (timingError / 3.0);
-        
-        // Penalize if gun needs large turn
-        if (gunTurnNeeded > Math.toRadians(45)) {
-            confidence *= 0.8;
-        }
-        
-        // Penalize very long shots
-        if (distance > 400) {
-            confidence *= 0.9;
-        }
-        
-        return new SnipeOpportunity(
-            enemy,
-            predictionFrame,
-            power,
-            aimAngle,
-            (int) Math.ceil(totalTime),
-            confidence
-        );
+        // Didn't converge
+        return null;
     }
     
     /**
@@ -553,16 +586,16 @@ public class PotatoBot extends TeamRobot {
      */
     private static class SnipeOpportunity {
         EnemyBot target;
-        int predictionFrame;
+        int estimatedTurns;  // Estimated turns until hit
         double power;
         double aimAngle;
         int turnsToHit;
         double confidence;
         
-        SnipeOpportunity(EnemyBot target, int frame, double power, 
+        SnipeOpportunity(EnemyBot target, int estimatedTurns, double power, 
                         double aimAngle, int turns, double confidence) {
             this.target = target;
-            this.predictionFrame = frame;
+            this.estimatedTurns = estimatedTurns;
             this.power = power;
             this.aimAngle = aimAngle;
             this.turnsToHit = turns;
@@ -594,31 +627,52 @@ public class PotatoBot extends TeamRobot {
      */
     private void attemptSnipe() {
         // Check if we can fire
-        if (getGunHeat() > 0 || currentTarget == null) {
+        if (getGunHeat() > 0) {
+            return;
+        }
+        
+        if (currentTarget == null) {
             return;
         }
         
         // Get best snipe for current target
         SnipeOpportunity snipe = calculateBestSnipe(currentTarget);
         
-        if (snipe == null || snipe.confidence < MIN_SNIPE_CONFIDENCE) {
-            return;  // No good shot
-        }
-        
-        // Check if we have enough energy
-        if (getEnergy() < snipe.power) {
-            return;  // Not enough energy
-        }
-        
-        // Aim gun
-        double gunTurn = Utils.normalRelativeAngle(snipe.aimAngle - getGunHeadingRadians());
-        setTurnGunRightRadians(gunTurn);
-        
-        // Fire if aimed (within tolerance)
-        if (Math.abs(getGunTurnRemaining()) < Math.toRadians(5)) {
-            setFire(snipe.power);
-            out.println(String.format("SNIPE: %s | Power: %.1f | Frame: %d | Confidence: %.2f",
-                snipe.target.name, snipe.power, snipe.predictionFrame, snipe.confidence));
+        if (snipe != null && snipe.confidence >= MIN_SNIPE_CONFIDENCE) {
+            // Check if we have enough energy
+            if (getEnergy() < snipe.power) {
+                return;  // Not enough energy
+            }
+            
+            // Aim gun at predicted position
+            double gunTurn = Utils.normalRelativeAngle(snipe.aimAngle - getGunHeadingRadians());
+            setTurnGunRightRadians(gunTurn);
+            
+            // Fire if aimed (within tolerance)
+            if (Math.abs(getGunTurnRemainingRadians()) < Math.toRadians(10)) {
+                setFire(snipe.power);
+                out.println(String.format("SNIPE: %s | Power: %.1f | Turns: %d | Confidence: %.2f",
+                    snipe.target.name, snipe.power, snipe.turnsToHit, snipe.confidence));
+            }
+        } else {
+            // Fallback: simple direct targeting at current position
+            if (currentTarget.position != null && getEnergy() > 1.0) {
+                double aimAngle = Math.atan2(
+                    currentTarget.position.x - getX(),
+                    currentTarget.position.y - getY()
+                );
+                double gunTurn = Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians());
+                setTurnGunRightRadians(gunTurn);
+                
+                // Fire low power if roughly aimed
+                if (Math.abs(getGunTurnRemainingRadians()) < Math.toRadians(15)) {
+                    double power = Math.min(2.0, currentTarget.distance / 100);
+                    power = Math.max(0.5, power);
+                    setFire(power);
+                    out.println(String.format("FALLBACK FIRE: %s | Power: %.1f", 
+                        currentTarget.name, power));
+                }
+            }
         }
     }
     
@@ -674,7 +728,6 @@ public class PotatoBot extends TeamRobot {
             if (killTarget != null && killTarget.name.equals(e.getName())) {
                 killTarget = null;
                 currentState = MovementState.VIBING;
-                initializeMovement();
             }
         }
     }
