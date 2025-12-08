@@ -45,7 +45,7 @@ public class PotatoBot extends TeamRobot {
     private static final double idealDistance = 200.0;  // Closer = more hits
     
     // Targeting parameters
-    private static final int maxPredictFrames = 30;
+    private static final int maxPredictFrames = 15;  // Beyond this, predictions are unreliable
     private static final double minSnipeConfidence = 0.4;
     private static final int maxSnipeConfidence= 50;
 
@@ -218,13 +218,20 @@ public class PotatoBot extends TeamRobot {
             double py = position.y;
             double h = Math.toRadians(heading);
             double v = velocity;
+            double av = angularVelocity;
+            double acc = acceleration;
             
             // Index 1 onwards are future predictions
             for (int i = 1; i < predictedPositions.length; i++) {
-                h += angularVelocity;
+                // Decay angular velocity (robots don't spin forever)
+                av *= 0.85;
+                
+                // Decay acceleration (robots don't accelerate forever)
+                acc *= 0.7;
+                
+                h += av;
                 if (consecutiveScans >= 2) {
-                    v += acceleration;
-                    // Clamp to max speed if needed
+                    v += acc;
                     v = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, v));
                 }
                 px += v * Math.sin(h);
@@ -232,19 +239,7 @@ public class PotatoBot extends TeamRobot {
                 px = Math.max(robotRadius, Math.min(BATTLEFIELD_WIDTH - robotRadius, px));
                 py = Math.max(robotRadius, Math.min(BATTLEFIELD_HEIGHT - robotRadius, py));
                 predictedPositions[i] = new Point2D.Double(px, py);
-
-                // Get Confidence
-                // double baseConfidence = Math.exp(-0.08 * turn);
-                // double scanBonus = Math.min(1.0, consecutiveScans / 5.0);
-                // double historyFactor = 0.5 + 0.5 * historicalPredictionAccuracy;
-                // double velocityFactor = (Math.abs(v) < 2) ? 1.2 : 1.0;
-                
-                // predictionConfidence[turn] = Math.min(1.0,
-                // baseConfidence * scanBonus * historyFactor * velocityFactor);
-
             }
-
-
         }
 
         private void calcDistances(Point2D.Double startPos){
@@ -300,11 +295,16 @@ public class PotatoBot extends TeamRobot {
 
         public float getScore(){
             // Calculates score
-            // Turn number is risk, power is reward, so we look at risk rewards to choose best snipe
-            float prod = (float)(numTurns * numTurns);
+            // Turn number is risk, power is reward
+            // Heavily favor close shots (they actually hit)
             
-            // Favor closer oponents
-            return (float)power / prod;
+            if (numTurns > 15) {
+                // Long shots rarely hit, penalize heavily
+                return (float)(power / (numTurns * numTurns * 2));
+            }
+            
+            // Close shots: favor high power
+            return (float)(power * power) / (float)(numTurns * numTurns);
         }
     }
     // ========== INCOMING BULLET TRACKING ==========
@@ -378,7 +378,8 @@ public class PotatoBot extends TeamRobot {
             
             updateTargeting();
             executeRadarStrategy();
-            snipeCheck();
+            trackGun();      // Always keep gun aimed at target
+            snipeCheck();    // Fire when ready
             
             execute();
         }
@@ -978,6 +979,44 @@ public class PotatoBot extends TeamRobot {
     }
 
 
+    // ========== GUN TRACKING ==========
+    
+    /**
+     * Keep gun aimed at best target prediction, even when not firing
+     * This way gun is already aligned when we're ready to shoot
+     */
+    private void trackGun() {
+        EnemyBot target = (killTarget != null && killTarget.isAlive) ? killTarget : currTarget;
+        
+        if (target == null || target.position == null || !target.isAlive) {
+            return;
+        }
+        
+        // Predict where to aim based on distance
+        Point2D.Double aimPoint = target.position;
+        
+        // Use prediction for moving targets
+        if (Math.abs(target.velocity) > 0.5) {
+            // Estimate bullet travel time at medium power
+            double bulletSpeed = getBulletSpeed(2.0);
+            int estimatedTurns = (int) Math.ceil(target.distance / bulletSpeed);
+            
+            // Clamp to valid prediction index
+            estimatedTurns = Math.min(estimatedTurns, maxPredictFrames);
+            estimatedTurns = Math.max(1, estimatedTurns);
+            
+            if (target.predictedPositions[estimatedTurns] != null) {
+                aimPoint = target.predictedPositions[estimatedTurns];
+            }
+        }
+        
+        // Calculate gun turn needed
+        double aimAngle = Math.atan2(aimPoint.x - getX(), aimPoint.y - getY());
+        double gunTurn = Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians());
+        
+        setTurnGunRightRadians(gunTurn);
+    }
+
     // ========== SNIPING SYSTEM ==========
 
     private static double getBulletSpeed(double power){
@@ -1103,16 +1142,21 @@ public class PotatoBot extends TeamRobot {
 
     /**
      * Check for snipe opportunities and fire if good shot available
+     * Gun tracking is handled by trackGun(), this just decides when to fire
      */
     private void snipeCheck() {
         if (getGunHeat() > 0) {
             return;
         }
         
+        // Don't fire if gun is still turning significantly
+        if (Math.abs(getGunTurnRemainingRadians()) > 0.15) {
+            return;
+        }
+        
         ArrayList<Snipe> snipes = new ArrayList<>();
         
         for (EnemyBot enemy : enemies.values()) {
-            // Only consider recently scanned enemies
             if (getTime() - enemy.turnLastSeen > maxScanAge) {
                 continue;
             }
@@ -1124,37 +1168,17 @@ public class PotatoBot extends TeamRobot {
         
         Snipe best = chooseBestSnipe(snipes);
         
-        if (best == null) {
-            // Fallback: if no snipes found but we have a target, just shoot at current position
-            if (currTarget != null && currTarget.position != null && currTarget.isAlive) {
-                double aimAngle = Math.atan2(
-                    currTarget.position.x - getX(), 
-                    currTarget.position.y - getY()
-                );
-                double turnAngle = Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians());
-                setTurnGunRightRadians(turnAngle);
-                
-                if (Math.abs(getGunTurnRemainingRadians()) < 0.1) {
-                    double power = calculateOptimalPower(currTarget.distance);
-                    setFire(power);
-                }
-            }
-            return;
-        }
-        
-        // Aim at target position
-        Point2D.Double targetPos = best.enemy.predictedPositions[best.numTurns];
-        if (targetPos == null) {
-            return;
-        }
-        
-        double aimAngle = Math.atan2(targetPos.x - getX(), targetPos.y - getY());
-        double turnAngle = Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians());
-        setTurnGunRightRadians(turnAngle);
-        
-        // Fire if gun is aligned
-        if (Math.abs(getGunTurnRemainingRadians()) < 0.1) {
+        if (best != null) {
             setFire(best.power);
+            return;
+        }
+        
+        // Fallback: if no calculated snipe but gun is aimed and we have a target, just fire
+        if (currTarget != null && currTarget.isAlive && currTarget.position != null) {
+            if (Math.abs(getGunTurnRemainingRadians()) < 0.1) {
+                double power = calculateOptimalPower(currTarget.distance);
+                setFire(power);
+            }
         }
     }
 
@@ -1248,9 +1272,9 @@ public class PotatoBot extends TeamRobot {
         }
         directionChangeTime = getTime();
     }
-
+    
     @Override
     public void onSkippedTurn(SkippedTurnEvent e) {
-    out.println("!!! SKIPPED TURN at " + e.getTime() + " !!!");
+        out.println("!!! SKIPPED TURN at " + e.getTime() + " - reduce computation !!!");
     }
 }
