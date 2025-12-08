@@ -2,21 +2,21 @@ package student;
 
 import robocode.*;
 import robocode.util.Utils;
+import sampleteam.RobotColors;
+
 import java.awt.Color;
 import java.awt.geom.Point2D;
 import java.util.*;
+import robocode.MessageEvent;
+import java.util.Map; // if enemyList is a Map
+
+import org.apache.commons.lang3.tuple.Pair;
 
 /**
- * PotatoBot - Advanced Robocode Robot (Enhanced)
- * 
- * Improvements:
- * - Distance-based bullet power (high power up close, low power far away)
- * - Retreat mode when low on energy or outgunned
- * - Smarter energy management
- * - Ram detection and counter-ramming logic
- * 
+ * PotatoBot - Advanced Robocode Robot
  * @author Nicholas
  */
+
 public class PotatoBot extends TeamRobot {    
     // Physics constants
     private static final double MAX_VELOCITY = 8.0;
@@ -432,7 +432,7 @@ public class PotatoBot extends TeamRobot {
         }
         
         // Cancel retreat if we've recovered
-        if (stateMachine.getCurrentStateId() == MovementState.RETREAT && shouldCancelRetreat()) {
+        if (stateMachine.getCurrentStateId() == MovementState.RETREAT && retreatCancelCheck()) {
             out.println("Ending retreat - recovered enough energy");
             stateMachine.setState(MovementState.VIBING);
         }
@@ -497,7 +497,7 @@ public class PotatoBot extends TeamRobot {
         return false;
     }
     
-    private boolean shouldCancelRetreat() {
+    private boolean retreatCancelCheck() {
         double myEnergy = getEnergy();
         
         // Cancel if we've recovered
@@ -1223,6 +1223,39 @@ public class PotatoBot extends TeamRobot {
         return best;
     }
     
+    // Message Passing
+    public void onMessageReceived(MessageEvent event) { // Built by Joseph, First in Root Pair is Msg Type, Second is the actual Payload
+    Object msg = event.getMessage();
+
+    if (msg instanceof Pair) {
+        Pair<?, ?> p1 = (Pair<?, ?>) msg;
+        if (p1.getLeft() instanceof Integer && ((Integer) p1.getLeft()) == 0) {
+            Pair<?, ?> p2 = (Pair<?, ?>) p1.getRight();
+            String name = (String) p2.getLeft();
+            Pair<?, ?> p3 = (Pair<?, ?>) p2.getRight();
+            Point2D location = (Point2D) p3.getLeft();
+            Pair<?, ?> p4 = (Pair<?, ?>) p3.getRight();
+            double energy = (Double) p4.getRight();
+
+            var entry = enemies.get(name);
+
+            if (entry != null) {
+                entry.position = (Point2D.Double)location;
+                entry.energy = energy;
+                entry.turnLastSeen = getTime();
+                entry.heading = Math.atan2(location.getX() - getX(), location.getY() - getY());
+            }
+        } else if (p1.getLeft() instanceof Integer && ((Integer) p1.getLeft()) == 1) {
+            if (p1.getRight() instanceof RobotColors) {
+                RobotColors c = (RobotColors) p1.getRight();
+
+                setRadarColor(c.scanColor);
+                setRadarColor(c.bulletColor);
+            }
+        }
+    }
+}
+
     // ========== EVENT HANDLERS ==========
     
     @Override
