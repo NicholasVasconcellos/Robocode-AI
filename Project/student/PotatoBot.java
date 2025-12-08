@@ -1248,4 +1248,9 @@ public class PotatoBot extends TeamRobot {
         }
         directionChangeTime = getTime();
     }
+
+    @Override
+    public void onSkippedTurn(SkippedTurnEvent e) {
+    out.println("!!! SKIPPED TURN at " + e.getTime() + " !!!");
+    }
 }
