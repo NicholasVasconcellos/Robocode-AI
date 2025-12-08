@@ -147,9 +147,9 @@ public class PotatoBot extends TeamRobot {
         // constructor with name
         public EnemyBot(String name) {
             this.name = name;
-            this.predictedPositions = new Point2D.Double[maxPredictFrames];
-            this.predictionConfidence = new double[maxPredictFrames];
-            this.predictedDistances = new double[maxPredictFrames];
+            this.predictedPositions = new Point2D.Double[maxPredictFrames + 1];
+            this.predictionConfidence = new double[maxPredictFrames + 1];
+            this.predictedDistances = new double[maxPredictFrames + 1];
             this.consecutiveScans = 0;
         }
         
@@ -208,13 +208,18 @@ public class PotatoBot extends TeamRobot {
         }
         
         // Generate up to N next positions
+        // Index 0 = current position, Index 1 = next turn, etc.
         private void predictNextPositions() {
+            // Index 0 is current position
+            predictedPositions[0] = (Point2D.Double) position.clone();
+            
             double px = position.x;
             double py = position.y;
             double h = Math.toRadians(heading);
             double v = velocity;
             
-            for (int i = 0; i < predictedPositions.length; i++) {
+            // Index 1 onwards are future predictions
+            for (int i = 1; i < predictedPositions.length; i++) {
                 h += angularVelocity;
                 if (consecutiveScans >= 2) {
                     v += acceleration;
@@ -973,10 +978,10 @@ public class PotatoBot extends TeamRobot {
         
         // For each future turn, calculate if we can hit
         for (int turn = 1; turn <= maxTurns && turn < enemy.predictedPositions.length; turn++) {
-            Point2D.Double targetPos = enemy.predictedPositions[turn - 1];
+            Point2D.Double targetPos = enemy.predictedPositions[turn];
             if (targetPos == null) continue;
             
-            double distance = enemy.predictedDistances[turn - 1];
+            double distance = enemy.predictedDistances[turn];
             
             // Quick rejection: is this turn even reachable?
             if (!isTurnPossible(distance, turn)) {
@@ -1068,7 +1073,7 @@ public class PotatoBot extends TeamRobot {
         }
         
         // Aim at target position
-        Point2D.Double targetPos = best.enemy.predictedPositions[best.numTurns - 1];
+        Point2D.Double targetPos = best.enemy.predictedPositions[best.numTurns];
         if (targetPos == null) {
             return;
         }
