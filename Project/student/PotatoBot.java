@@ -56,23 +56,24 @@ public class PotatoBot extends TeamRobot {
     private static final double MID_RANGE = 300.0;      // Medium power zone
     private static final double LONG_RANGE = 500.0;     // Low power zone
     
-    // ========== STATE VARIABLES ==========
-    
+    // ========== STATE MACHINE ==========
+
     private enum MovementState {
-        EVADE,      // Evasive movement with bullet dodging
+        VIBING,      // Evasive movement with bullet dodging
         CHASE,      // Pursuing distant target
         KILL_MODE,  // Rushing low-HP target
-        RETREAT     // NEW: Running away when outgunned
+        RETREAT     // Running away when outgunned
     }
     
-    private MovementState currentState = MovementState.EVADE;
+    private MovementState currState = MovementState.VIBING;
     private int moveDirection = 1;
     private long directionChangeTime = 0;
     private double desiredHeading = 0;
     
-    // Enemy tracking
+    // Enemy tracking 
+    // final = const pointer in cpp
     private final Map<String, EnemyBot> enemies = new HashMap<>();
-    private EnemyBot currentTarget = null;
+    private EnemyBot currTarget = null;
     private EnemyBot killTarget = null;
     
     // Bullet tracking for avoidance
@@ -260,9 +261,9 @@ public class PotatoBot extends TeamRobot {
             cleanupBullets();
             updateMovementState();
             
-            switch (currentState) {
-                case EVADE:
-                    executeEvadeMovement();
+            switch (currState) {
+                case VIBING:
+                    executeVIBINGMovement();
                     break;
                 case CHASE:
                     executeChaseMovement();
@@ -296,38 +297,38 @@ public class PotatoBot extends TeamRobot {
         
         // === NEW: Priority 0 - Retreat check ===
         if (shouldRetreat()) {
-            if (currentState != MovementState.RETREAT) {
+            if (currState != MovementState.RETREAT) {
                 retreatStartTime = getTime();
                 out.println("RETREATING - Low energy or outgunned!");
             }
-            currentState = MovementState.RETREAT;
+            currState = MovementState.RETREAT;
             return;
         }
         
         // Cancel retreat if we've recovered
-        if (currentState == MovementState.RETREAT && shouldCancelRetreat()) {
+        if (currState == MovementState.RETREAT && shouldCancelRetreat()) {
             out.println("Ending retreat - recovered enough energy");
-            currentState = MovementState.EVADE;
+            currState = MovementState.VIBING;
         }
         
         // Priority 1: Kill mode for weak enemies (but not if we're also weak)
         if (getEnergy() > RETREAT_ENERGY_THRESHOLD) {
             killTarget = findKillTarget();
             if (killTarget != null) {
-                currentState = MovementState.KILL_MODE;
+                currState = MovementState.KILL_MODE;
                 return;
             }
         }
         
         // Priority 2: Chase if target is far
-        if (currentTarget != null && currentTarget.distance > CHASE_DISTANCE) {
-            currentState = MovementState.CHASE;
+        if (currTarget != null && currTarget.distance > CHASE_DISTANCE) {
+            currState = MovementState.CHASE;
             return;
         }
         
-        // Default: Evade
-        if (currentState != MovementState.RETREAT) {
-            currentState = MovementState.EVADE;
+        // Default: VIBING
+        if (currState != MovementState.RETREAT) {
+            currState = MovementState.VIBING;
         }
     }
     
@@ -341,16 +342,16 @@ public class PotatoBot extends TeamRobot {
         }
         
         // Check if outgunned by current target
-        if (currentTarget != null && currentTarget.alive) {
-            double energyRatio = myEnergy / Math.max(1, currentTarget.energy);
+        if (currTarget != null && currTarget.alive) {
+            double energyRatio = myEnergy / Math.max(1, currTarget.energy);
             
             // Retreat if we have significantly less energy AND they're close
-            if (energyRatio < RETREAT_ENERGY_RATIO && currentTarget.distance < 300) {
+            if (energyRatio < RETREAT_ENERGY_RATIO && currTarget.distance < 300) {
                 return true;
             }
             
             // Retreat from aggressive rammers when we're damaged
-            if (currentTarget.isRammer() && myEnergy < 40 && currentTarget.distance < 200) {
+            if (currTarget.isRammer() && myEnergy < 40 && currTarget.distance < 200) {
                 return true;
             }
         }
@@ -392,26 +393,26 @@ public class PotatoBot extends TeamRobot {
     }
     
     private boolean checkIfBeingRammed() {
-        if (currentTarget == null) return false;
+        if (currTarget == null) return false;
         
-        return currentTarget.distance < RAM_DETECTION_DISTANCE && 
-               currentTarget.approachRate > 6 &&
-               currentTarget.velocity > 4;
+        return currTarget.distance < RAM_DETECTION_DISTANCE && 
+               currTarget.approachRate > 6 &&
+               currTarget.velocity > 4;
     }
     
     // === NEW: Retreat movement ===
     private void executeRetreatMovement() {
         setMaxVelocity(MAX_VELOCITY);
         
-        if (currentTarget == null || currentTarget.position == null) {
+        if (currTarget == null || currTarget.position == null) {
             executeRandomMovement();
             return;
         }
         
         // Move AWAY from the threat
         double awayAngle = Math.atan2(
-            getX() - currentTarget.position.x,
-            getY() - currentTarget.position.y
+            getX() - currTarget.position.x,
+            getY() - currTarget.position.y
         );
         
         // Add some perpendicular movement to avoid being predictable
@@ -445,13 +446,13 @@ public class PotatoBot extends TeamRobot {
             moveDirection *= -1;
         }
         
-        out.println("RETREAT: dist=" + (int)currentTarget.distance + 
-            " myHP=" + (int)getEnergy() + " theirHP=" + (int)currentTarget.energy);
+        out.println("RETREAT: dist=" + (int)currTarget.distance + 
+            " myHP=" + (int)getEnergy() + " theirHP=" + (int)currTarget.energy);
     }
     
-    // ========== EVADE MOVEMENT ==========
+    // ========== VIBING MOVEMENT ==========
     
-    private void executeEvadeMovement() {
+    private void executeVIBINGMovement() {
         setMaxVelocity(MAX_VELOCITY);
         
         IncomingBullet dangerBullet = findMostDangerousBullet();
@@ -460,7 +461,7 @@ public class PotatoBot extends TeamRobot {
             return;
         }
         
-        if (currentTarget != null) {
+        if (currTarget != null) {
             executeStrafeMovement();
         } else {
             executeRandomMovement();
@@ -534,13 +535,13 @@ public class PotatoBot extends TeamRobot {
     
     private void executeStrafeMovement() {
         double absoluteBearing = Math.atan2(
-            currentTarget.position.x - getX(),
-            currentTarget.position.y - getY()
+            currTarget.position.x - getX(),
+            currTarget.position.y - getY()
         );
         
         double strafeAngle = absoluteBearing + (Math.PI / 2) * moveDirection;
         
-        double distanceError = currentTarget.distance - PREFERRED_DISTANCE;
+        double distanceError = currTarget.distance - PREFERRED_DISTANCE;
         double approachComponent = Math.toRadians(distanceError / 10);
         strafeAngle = Utils.normalRelativeAngle(strafeAngle - approachComponent * moveDirection);
         
@@ -579,16 +580,16 @@ public class PotatoBot extends TeamRobot {
     // ========== CHASE MOVEMENT ==========
     
     private void executeChaseMovement() {
-        if (currentTarget == null || currentTarget.position == null) {
-            currentState = MovementState.EVADE;
+        if (currTarget == null || currTarget.position == null) {
+            currState = MovementState.VIBING;
             return;
         }
         
         setMaxVelocity(MAX_VELOCITY);
         
-        Point2D.Double targetPos = currentTarget.position;
-        if (currentTarget.predictedPositions[2] != null) {
-            targetPos = currentTarget.predictedPositions[2];
+        Point2D.Double targetPos = currTarget.position;
+        if (currTarget.predictedPositions[2] != null) {
+            targetPos = currTarget.predictedPositions[2];
         }
         
         double absoluteBearing = Math.atan2(
@@ -603,10 +604,10 @@ public class PotatoBot extends TeamRobot {
         
         if (Math.abs(turnNeeded) < Math.PI / 2) {
             setTurnRightRadians(turnNeeded);
-            setAhead(currentTarget.distance);
+            setAhead(currTarget.distance);
         } else {
             setTurnRightRadians(Utils.normalRelativeAngle(turnNeeded + Math.PI));
-            setBack(currentTarget.distance);
+            setBack(currTarget.distance);
         }
     }
     
@@ -614,7 +615,7 @@ public class PotatoBot extends TeamRobot {
     
     private void executeKillMovement() {
         if (killTarget == null || !killTarget.alive) {
-            currentState = MovementState.EVADE;
+            currState = MovementState.VIBING;
             return;
         }
         
@@ -691,8 +692,8 @@ public class PotatoBot extends TeamRobot {
     // ========== RADAR STRATEGY ==========
     
     private void executeRadarStrategy() {
-        if (currentTarget != null && getTime() - currentTarget.lastSeenTime < 5) {
-            narrowRadarLock(currentTarget);
+        if (currTarget != null && getTime() - currTarget.lastSeenTime < 5) {
+            narrowRadarLock(currTarget);
         } else {
             setTurnRadarRight(360);
         }
@@ -712,8 +713,8 @@ public class PotatoBot extends TeamRobot {
     // ========== TARGETING SYSTEM ==========
     
     private void updateTargeting() {
-        EnemyBot previousTarget = currentTarget;
-        currentTarget = null;
+        EnemyBot previousTarget = currTarget;
+        currTarget = null;
         double bestScore = Double.MIN_VALUE;
         
         for (EnemyBot enemy : enemies.values()) {
@@ -741,14 +742,14 @@ public class PotatoBot extends TeamRobot {
             
             if (score > bestScore) {
                 bestScore = score;
-                currentTarget = enemy;
+                currTarget = enemy;
             }
         }
         
-        if (currentTarget != null && (previousTarget == null || 
-            !currentTarget.name.equals(previousTarget.name))) {
-            out.println("TARGET: " + currentTarget.name + 
-                " (dist=" + (int)currentTarget.distance + ", hp=" + (int)currentTarget.energy + ")");
+        if (currTarget != null && (previousTarget == null || 
+            !currTarget.name.equals(previousTarget.name))) {
+            out.println("TARGET: " + currTarget.name + 
+                " (dist=" + (int)currTarget.distance + ", hp=" + (int)currTarget.energy + ")");
         }
     }
     
@@ -757,7 +758,7 @@ public class PotatoBot extends TeamRobot {
         double myEnergy = getEnergy();
         
         // If retreating, use minimum power to conserve energy
-        if (currentState == MovementState.RETREAT) {
+        if (currState == MovementState.RETREAT) {
             return 0.5;
         }
         
@@ -789,22 +790,22 @@ public class PotatoBot extends TeamRobot {
         }
         
         // Adjust for kill mode - boost power to finish them off
-        if (currentState == MovementState.KILL_MODE && killTarget != null) {
+        if (currState == MovementState.KILL_MODE && killTarget != null) {
             // Use enough power to kill, but not wastefully more
             double killPower = killTarget.energy / 4.0 + 0.1;  // 4 damage per power
             basePower = Math.max(basePower, Math.min(3.0, killPower));
         }
         
         // Enemy-specific adjustments
-        if (currentTarget != null) {
+        if (currTarget != null) {
             // Against rammers, use high power when they're close
-            if (currentTarget.isRammer() && distance < 200) {
+            if (currTarget.isRammer() && distance < 200) {
                 basePower = Math.max(basePower, 2.5);
             }
             
             // If enemy is nearly dead, ensure we can kill them
-            if (currentTarget.energy < basePower * 4 && currentTarget.energy > 0) {
-                basePower = Math.min(3.0, currentTarget.energy / 4.0 + 0.2);
+            if (currTarget.energy < basePower * 4 && currTarget.energy > 0) {
+                basePower = Math.min(3.0, currTarget.energy / 4.0 + 0.2);
             }
         }
         
@@ -941,16 +942,16 @@ public class PotatoBot extends TeamRobot {
     }
     
     private void attemptSnipe() {
-        if (getGunHeat() > 0 || currentTarget == null) {
+        if (getGunHeat() > 0 || currTarget == null) {
             return;
         }
         
         // Don't shoot if we're too low on energy (except in kill mode)
-        if (getEnergy() < 1.0 && currentState != MovementState.KILL_MODE) {
+        if (getEnergy() < 1.0 && currState != MovementState.KILL_MODE) {
             return;
         }
         
-        SnipeOpportunity snipe = calculateBestSnipe(currentTarget);
+        SnipeOpportunity snipe = calculateBestSnipe(currTarget);
         
         if (snipe != null && snipe.confidence >= MIN_SNIPE_CONFIDENCE) {
             if (getEnergy() < snipe.power) {
@@ -963,19 +964,19 @@ public class PotatoBot extends TeamRobot {
             if (Math.abs(getGunTurnRemainingRadians()) < Math.toRadians(10)) {
                 setFire(snipe.power);
                 out.println(String.format("FIRE: %s | P:%.1f | D:%d | C:%.2f",
-                    snipe.target.name, snipe.power, (int)currentTarget.distance, snipe.confidence));
+                    snipe.target.name, snipe.power, (int)currTarget.distance, snipe.confidence));
             }
-        } else if (currentTarget.position != null && getEnergy() > 1.0) {
+        } else if (currTarget.position != null && getEnergy() > 1.0) {
             // Fallback: simple targeting with distance-based power
             double aimAngle = Math.atan2(
-                currentTarget.position.x - getX(),
-                currentTarget.position.y - getY()
+                currTarget.position.x - getX(),
+                currTarget.position.y - getY()
             );
             double gunTurn = Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians());
             setTurnGunRightRadians(gunTurn);
             
             if (Math.abs(getGunTurnRemainingRadians()) < Math.toRadians(15)) {
-                double power = calculateOptimalPower(currentTarget.distance);
+                double power = calculateOptimalPower(currTarget.distance);
                 setFire(power);
             }
         }
@@ -1030,10 +1031,10 @@ public class PotatoBot extends TeamRobot {
             
             if (killTarget != null && killTarget.name.equals(e.getName())) {
                 killTarget = null;
-                currentState = MovementState.EVADE;
+                currState = MovementState.VIBING;
             }
-            if (currentTarget != null && currentTarget.name.equals(e.getName())) {
-                currentTarget = null;
+            if (currTarget != null && currTarget.name.equals(e.getName())) {
+                currTarget = null;
             }
         }
     }
@@ -1051,10 +1052,10 @@ public class PotatoBot extends TeamRobot {
             setFire(3.0);
         }
         
-        if (currentState == MovementState.KILL_MODE && 
+        if (currState == MovementState.KILL_MODE && 
             killTarget != null && e.getName().equals(killTarget.name)) {
             setAhead(50);  // Keep ramming
-        } else if (currentState == MovementState.RETREAT) {
+        } else if (currState == MovementState.RETREAT) {
             // If retreating and we hit them, back away fast
             setBack(150);
         } else {
@@ -1065,6 +1066,7 @@ public class PotatoBot extends TeamRobot {
     
     @Override
     public void onHitByBullet(HitByBulletEvent e) {
+        // 50% chance to invert movement on hit
         if (random.nextBoolean()) {
             moveDirection *= -1;
         }
