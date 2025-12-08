@@ -62,7 +62,35 @@ public class PotatoBot extends TeamRobot {
         RETREAT      // Running away when outgunned
     }
     
-    private MovementState currState = MovementState.VIBING;
+    // ----- State machine implementation -----
+    private abstract class State {
+        private final MovementState id;
+        State(MovementState id) { this.id = id; }
+        public MovementState getId() { return id; }
+        public String getName() { return id.name(); }
+        public abstract void run();
+    }
+
+    private class StateMachine {
+        private final Map<MovementState, State> states = new EnumMap<>(MovementState.class);
+        private State current = null;
+
+        void register(State s) { states.put(s.getId(), s); }
+        State getCurrentState() { return current; }
+        MovementState getCurrentStateId() { return current != null ? current.getId() : MovementState.VIBING; }
+        void setState(MovementState id) {
+            State s = states.get(id);
+            if (s != null) current = s;
+        }
+    }
+
+    private class VibingState extends State { VibingState(){ super(MovementState.VIBING);} public void run(){ executeVIBINGMovement(); }}
+    private class ChaseState  extends State { ChaseState(){ super(MovementState.CHASE);}  public void run(){ executeChaseMovement();  }}
+    private class AttackState extends State { AttackState(){ super(MovementState.ATTACK);} public void run(){ executeAttackMovement(); }}
+    private class KillState   extends State { KillState(){ super(MovementState.KILL_MODE);} public void run(){ executeKillMovement();   }}
+    private class RetreatState extends State{ RetreatState(){ super(MovementState.RETREAT);} public void run(){ executeRetreatMovement(); }}
+
+    private StateMachine stateMachine;
     private int moveDirection = 1;
     private long directionChangeTime = 0;
     private double desiredHeading = 0;
@@ -352,35 +380,31 @@ public class PotatoBot extends TeamRobot {
         BATTLEFIELD_HEIGHT = getBattleFieldHeight();
 
         setTurnRadarRight(360);
-        
+
+        // Initialize state machine and states
+        stateMachine = new StateMachine();
+        stateMachine.register(new VibingState());
+        stateMachine.register(new ChaseState());
+        stateMachine.register(new AttackState());
+        stateMachine.register(new KillState());
+        stateMachine.register(new RetreatState());
+        stateMachine.setState(MovementState.VIBING);
+
         while (true) {
             cleanupBullets();
             setState();
-            
-            // Run Current State
-            switch (currState) {
-                case VIBING:
-                    executeVIBINGMovement();
-                    break;
-                case CHASE:
-                    executeChaseMovement();
-                    break;
-                case ATTACK:
-                    executeAttackMovement();
-                    break;
-                case KILL_MODE:
-                    executeKillMovement();
-                    break;
-                case RETREAT:
-                    executeRetreatMovement();
-                    break;
+
+            // Run Current State via StateMachine
+            State current = stateMachine.getCurrentState();
+            if (current != null) {
+                current.run();
             }
-            
+
             updateTargeting();
             executeRadarStrategy();
             trackGun();      // Always keep gun aimed at target
             snipeCheck();    // Fire when ready
-            
+
             execute();
         }
     }
@@ -399,45 +423,45 @@ public class PotatoBot extends TeamRobot {
         // Retreat Check
         if (shouldRetreat()) {
             // Set state to retreat
-            if (currState != MovementState.RETREAT) {
+            if (stateMachine.getCurrentStateId() != MovementState.RETREAT) {
                 retreatStartTime = getTime();
                 out.println("RETREATING - Low energy or outgunned!");
             }
-            currState = MovementState.RETREAT;
+            stateMachine.setState(MovementState.RETREAT);
             return;
         }
         
         // Cancel retreat if we've recovered
-        if (currState == MovementState.RETREAT && shouldCancelRetreat()) {
+        if (stateMachine.getCurrentStateId() == MovementState.RETREAT && shouldCancelRetreat()) {
             out.println("Ending retreat - recovered enough energy");
-            currState = MovementState.VIBING;
+            stateMachine.setState(MovementState.VIBING);
         }
         
         // check for weak enemies - KILL MODE
         if (getEnergy() > retreatEnergyThreshold) {
             killTarget = findKillTarget();
             if (killTarget != null) {
-                currState = MovementState.KILL_MODE;
+                stateMachine.setState(MovementState.KILL_MODE);
                 return;
             }
         }
         
         // ATTACK mode for close range aggression
-        if (currTarget != null && currTarget.position != null && 
+            if (currTarget != null && currTarget.position != null && 
             currTarget.distance < closeRange && getEnergy() > 25) {
-            currState = MovementState.ATTACK;
+            stateMachine.setState(MovementState.ATTACK);
             return;
         }
         
         // Chase far Target
         if (currTarget != null && currTarget.distance > chaseDistance) {
-            currState = MovementState.CHASE;
+            stateMachine.setState(MovementState.CHASE);
             return;
         }
         
         // Default: VIBING
-        if (currState != MovementState.RETREAT) {
-            currState = MovementState.VIBING;
+        if (stateMachine.getCurrentStateId() != MovementState.RETREAT) {
+            stateMachine.setState(MovementState.VIBING);
         }
     }
     
@@ -702,7 +726,7 @@ public class PotatoBot extends TeamRobot {
         setMaxVelocity(MAX_VELOCITY);
         
         if (currTarget == null || currTarget.position == null) {
-            currState = MovementState.VIBING;
+            stateMachine.setState(MovementState.VIBING);
             return;
         }
         
@@ -740,7 +764,7 @@ public class PotatoBot extends TeamRobot {
         setColors(Color.YELLOW, Color.YELLOW, Color.YELLOW);
 
         if (currTarget == null || currTarget.position == null) {
-            currState = MovementState.VIBING;
+            stateMachine.setState(MovementState.VIBING);
             return;
         }
         
@@ -776,7 +800,7 @@ public class PotatoBot extends TeamRobot {
         setColors(Color.RED, Color.RED, Color.RED);
 
         if (killTarget == null || !killTarget.isAlive) {
-            currState = MovementState.VIBING;
+            stateMachine.setState(MovementState.VIBING);
             return;
         }
         
@@ -920,7 +944,7 @@ public class PotatoBot extends TeamRobot {
         double myEnergy = getEnergy();
         
         // If retreating, use minimum power to conserve energy
-        if (currState == MovementState.RETREAT) {
+        if (stateMachine.getCurrentStateId() == MovementState.RETREAT) {
             return 0.5;
         }
         
@@ -952,7 +976,7 @@ public class PotatoBot extends TeamRobot {
         }
         
         // Adjust for kill mode - boost power to finish them off
-        if (currState == MovementState.KILL_MODE && killTarget != null) {
+        if (stateMachine.getCurrentStateId() == MovementState.KILL_MODE && killTarget != null) {
             // Use enough power to kill, but not wastefully more
             double killPower = killTarget.energy / 4.0 + 0.1;  // 4 damage per power
             basePower = Math.max(basePower, Math.min(3.0, killPower));
@@ -1231,7 +1255,7 @@ public class PotatoBot extends TeamRobot {
             
             if (killTarget != null && killTarget.name.equals(e.getName())) {
                 killTarget = null;
-                currState = MovementState.VIBING;
+                stateMachine.setState(MovementState.VIBING);
             }
             if (currTarget != null && currTarget.name.equals(e.getName())) {
                 currTarget = null;
@@ -1252,10 +1276,10 @@ public class PotatoBot extends TeamRobot {
             setFire(3.0);
         }
         
-        if (currState == MovementState.KILL_MODE && 
+        if (stateMachine.getCurrentStateId() == MovementState.KILL_MODE && 
             killTarget != null && e.getName().equals(killTarget.name)) {
             setAhead(50);  // Keep ramming
-        } else if (currState == MovementState.RETREAT) {
+        } else if (stateMachine.getCurrentStateId() == MovementState.RETREAT) {
             // If retreating and we hit them, back away fast
             setBack(150);
         } else {
@@ -1275,6 +1299,6 @@ public class PotatoBot extends TeamRobot {
     
     @Override
     public void onSkippedTurn(SkippedTurnEvent e) {
-        out.println("!!! SKIPPED TURN at " + e.getTime() + " - reduce computation !!!");
+        out.println("!!! SKIPPED TURN at " + e.getTime() + "!!!");
     }
 }
