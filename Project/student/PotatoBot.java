@@ -42,10 +42,10 @@ public class PotatoBot extends TeamRobot {
     // Movement parameters
     private static final double wallMargin = 120.0;
     private static final double dangerWallMarging = 60.0;
-    private static final double idealDistance = 300.0;
+    private static final double idealDistance = 200.0;  // Closer = more hits
     
     // Targeting parameters
-    private static final int maxPredictFrames = 5;
+    private static final int maxPredictFrames = 30;
     private static final double minSnipeConfidence = 0.4;
     private static final int maxSnipeConfidence= 50;
 
@@ -56,9 +56,10 @@ public class PotatoBot extends TeamRobot {
     // State Machine
     private enum MovementState {
         VIBING,      // Evasive movement with bullet dodging
-        CHASE,      // Pursuing distant target
-        KILL_MODE,  // Rushing low-HP target
-        RETREAT     // Running away when outgunned
+        CHASE,       // Pursuing distant target
+        ATTACK,      // Close-range aggressive
+        KILL_MODE,   // Rushing low-HP target
+        RETREAT      // Running away when outgunned
     }
     
     private MovementState currState = MovementState.VIBING;
@@ -364,6 +365,9 @@ public class PotatoBot extends TeamRobot {
                 case CHASE:
                     executeChaseMovement();
                     break;
+                case ATTACK:
+                    executeAttackMovement();
+                    break;
                 case KILL_MODE:
                     executeKillMovement();
                     break;
@@ -408,13 +412,20 @@ public class PotatoBot extends TeamRobot {
             currState = MovementState.VIBING;
         }
         
-        // check for weak enemies
+        // check for weak enemies - KILL MODE
         if (getEnergy() > retreatEnergyThreshold) {
             killTarget = findKillTarget();
             if (killTarget != null) {
                 currState = MovementState.KILL_MODE;
                 return;
             }
+        }
+        
+        // ATTACK mode for close range aggression
+        if (currTarget != null && currTarget.position != null && 
+            currTarget.distance < closeRange && getEnergy() > 25) {
+            currState = MovementState.ATTACK;
+            return;
         }
         
         // Chase far Target
@@ -636,6 +647,11 @@ public class PotatoBot extends TeamRobot {
     }
     
     private void executeStrafeMovement() {
+        if (currTarget.position == null) {
+            executeRandomMovement();
+            return;
+        }
+        
         double absoluteBearing = Math.atan2(
             currTarget.position.x - getX(),
             currTarget.position.y - getY()
@@ -674,6 +690,43 @@ public class PotatoBot extends TeamRobot {
         setAhead(100);
         
         if (getTime() - directionChangeTime > 30) {
+            directionChangeTime = getTime();
+            moveDirection *= -1;
+        }
+    }
+    
+    // Attack.run() - Close range aggression
+    private void executeAttackMovement() {
+        setColors(Color.ORANGE, Color.ORANGE, Color.ORANGE);
+        setMaxVelocity(MAX_VELOCITY);
+        
+        if (currTarget == null || currTarget.position == null) {
+            currState = MovementState.VIBING;
+            return;
+        }
+        
+        // Move toward enemy at slight angle
+        double absoluteBearing = Math.atan2(
+            currTarget.position.x - getX(),
+            currTarget.position.y - getY()
+        );
+        
+        // Slight angle to avoid head-on (harder to hit us)
+        double attackAngle = absoluteBearing + Math.toRadians(20 * moveDirection);
+        attackAngle = applyWallAvoidance(attackAngle);
+        
+        double turnNeeded = Utils.normalRelativeAngle(attackAngle - getHeadingRadians());
+        
+        if (Math.abs(turnNeeded) < Math.PI / 2) {
+            setTurnRightRadians(turnNeeded);
+            setAhead(currTarget.distance + 50);
+        } else {
+            setTurnRightRadians(Utils.normalRelativeAngle(turnNeeded + Math.PI));
+            setBack(currTarget.distance + 50);
+        }
+        
+        // Fast direction changes when attacking
+        if (getTime() - directionChangeTime > 8 + random.nextInt(8)) {
             directionChangeTime = getTime();
             moveDirection *= -1;
         }
@@ -1063,12 +1116,29 @@ public class PotatoBot extends TeamRobot {
             if (getTime() - enemy.turnLastSeen > maxScanAge) {
                 continue;
             }
+            if (!enemy.isAlive || enemy.position == null) {
+                continue;
+            }
             snipes.addAll(getSnipesForEnemy(enemy, maxPredictFrames));
         }
         
         Snipe best = chooseBestSnipe(snipes);
         
         if (best == null) {
+            // Fallback: if no snipes found but we have a target, just shoot at current position
+            if (currTarget != null && currTarget.position != null && currTarget.isAlive) {
+                double aimAngle = Math.atan2(
+                    currTarget.position.x - getX(), 
+                    currTarget.position.y - getY()
+                );
+                double turnAngle = Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians());
+                setTurnGunRightRadians(turnAngle);
+                
+                if (Math.abs(getGunTurnRemainingRadians()) < 0.1) {
+                    double power = calculateOptimalPower(currTarget.distance);
+                    setFire(power);
+                }
+            }
             return;
         }
         
@@ -1083,7 +1153,7 @@ public class PotatoBot extends TeamRobot {
         setTurnGunRightRadians(turnAngle);
         
         // Fire if gun is aligned
-        if (Math.abs(getGunTurnRemainingRadians()) < 0.05) {
+        if (Math.abs(getGunTurnRemainingRadians()) < 0.1) {
             setFire(best.power);
         }
     }
