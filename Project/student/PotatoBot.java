@@ -179,26 +179,27 @@ public class PotatoBot extends TeamRobot {
                         }
                 }
 
-                predictNextPositions(BATTLEFIELD_WIDTH, BATTLEFIELD_HEIGHT);
+                predictNextPositions(predictionFrames);
         }
         
-        private void predictNextPositions(double fieldWidth, double fieldHeight) {
+        // Generate up to N next positions
+        private void predictNextPositions(int numTurns) {
             double px = position.x;
             double py = position.y;
             double h = Math.toRadians(heading);
             double v = velocity;
             
-            for (int i = 0; i < predictionFrames; i++) {
+            for (int i = 0; i < numTurns; i++) {
                 h += angularVelocity;
                 if (consecutiveScans >= 2) {
                     v += acceleration;
-                    // Camp to max speed if needed
+                    // Clamp to max speed if needed
                     v = Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, v));
                 }
                 px += v * Math.sin(h);
                 py += v * Math.cos(h);
-                px = Math.max(18, Math.min(fieldWidth - 18, px));
-                py = Math.max(18, Math.min(fieldHeight - 18, py));
+                px = Math.max(18, Math.min(BATTLEFIELD_WIDTH - 18, px));
+                py = Math.max(18, Math.min(BATTLEFIELD_HEIGHT - 18, py));
                 predictedPositions[i] = new Point2D.Double(px, py);
             }
         }
@@ -289,7 +290,7 @@ public class PotatoBot extends TeamRobot {
             }
             
             updateTargeting();
-            attemptSnipe();
+            // attemptSnipe();
             executeRadarStrategy();
             
             execute();
@@ -840,171 +841,176 @@ public class PotatoBot extends TeamRobot {
         return Math.max(0.1, Math.min(3.0, basePower));
     }
     
-    private SnipeOpportunity calculateBestSnipe(EnemyBot enemy) {
-        // Calculate optimal power based on distance first
-        double optimalPower = calculateOptimalPower(enemy.distance);
+    // private SnipeOpportunity calculateBestSnipe(EnemyBot enemy) {
+    //     // Calculate optimal power based on distance first
+    //     double optimalPower = calculateOptimalPower(enemy.distance);
         
-        // Try powers around the optimal
-        double[] powersToTry = {
-            optimalPower,
-            Math.max(0.5, optimalPower - 0.5),
-            Math.min(3.0, optimalPower + 0.5)
-        };
+    //     // Try powers around the optimal
+    //     double[] powersToTry = {
+    //         optimalPower,
+    //         Math.max(0.5, optimalPower - 0.5),
+    //         Math.min(3.0, optimalPower + 0.5)
+    //     };
         
-        SnipeOpportunity best = null;
+    //     SnipeOpportunity best = null;
         
-        for (double power : powersToTry) {
-            SnipeOpportunity snipe = checkSnipe(enemy, power);
+    //     for (double power : powersToTry) {
+    //         SnipeOpportunity snipe = checkSnipe(enemy, power);
             
-            if (snipe != null && snipe.confidence >= minSnipeConfidence) {
-                if (best == null || snipe.isBetterThan(best)) {
-                    best = snipe;
-                }
-            }
-        }
+    //         if (snipe != null && snipe.confidence >= minSnipeConfidence) {
+    //             if (best == null || snipe.isBetterThan(best)) {
+    //                 best = snipe;
+    //             }
+    //         }
+    //     }
         
-        return best;
-    }
+    //     return best;
+    // }
     
-    private SnipeOpportunity checkSnipe(EnemyBot enemy, double power) {
-        if (enemy.predictedPositions[0] == null) {
-            return null;
-        }
+    // private SnipeOpportunity checkSnipe(EnemyBot enemy, double power) {
+    //     // if no predicted positions return
+    //     if (enemy.predictedPositions[0] == null) {
+    //         return null;
+    //     }
         
-        double bulletSpeed = BULLET_SPEED_BASE - BULLET_SPEED_COEFFICIENT * power;
-        Point2D.Double targetPos = enemy.position;
-        double totalTime = 0;
+    //     double bulletSpeed = BULLET_SPEED_BASE - BULLET_SPEED_COEFFICIENT * power;
+    //     Point2D.Double targetPos = enemy.position;
+    //     double totalTime = 0;
         
-        for (int iteration = 0; iteration < 10; iteration++) {
-            double distance = Point2D.distance(getX(), getY(), targetPos.x, targetPos.y);
-            double bulletTime = distance / bulletSpeed;
+    //     for (int iteration = 0; iteration < 10; iteration++) {
+    //         // Get Distance to target
+    //         double distance = Point2D.distance(getX(), getY(), targetPos.x, targetPos.y);
+    //         // Time for bullet to cover distance
+    //         double bulletTime = distance / bulletSpeed;
             
-            double aimAngle = Math.atan2(targetPos.x - getX(), targetPos.y - getY());
-            double gunTurnNeeded = Math.abs(Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians()));
-            double gunTurnTime = gunTurnNeeded / GUN_TURN_RATE_RADIANS;
+    //         // Get gun turn time to fire at that angle
+    //         double aimAngle = Math.atan2(targetPos.x - getX(), targetPos.y - getY());
+    //         double gunTurnNeeded = Math.abs(Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians()));
+    //         double gunTurnTime = gunTurnNeeded / GUN_TURN_RATE_RADIANS;
             
-            double newTotalTime = gunTurnTime + bulletTime;
+    //         // Get Total time for Snipe at this frame
+    //         double newTotalTime = gunTurnTime + bulletTime;
             
-            if (Math.abs(newTotalTime - totalTime) < 0.5) {
-                if (newTotalTime > maxSnipeConfidence|| gunTurnNeeded > Math.toRadians(90)) {
-                    return null;
-                }
+    //         if (Math.abs(newTotalTime - totalTime) < 0.5) {
+    //             if (newTotalTime > maxSnipeConfidence|| gunTurnNeeded > Math.toRadians(90)) {
+    //                 return null;
+    //             }
                 
-                double confidence = 1.0;
-                if (gunTurnNeeded > Math.toRadians(45)) confidence *= 0.7;
-                if (distance > 400) confidence *= 0.8;
-                if (newTotalTime > 20) confidence *= 0.9;
-                if (Math.abs(enemy.velocity) < 2) confidence *= 1.2;
-                confidence = Math.min(1.0, confidence);
+    //             double confidence = 1.0;
+    //             if (gunTurnNeeded > Math.toRadians(45)) confidence *= 0.7;
+    //             if (distance > 400) confidence *= 0.8;
+    //             if (newTotalTime > 20) confidence *= 0.9;
+    //             if (Math.abs(enemy.velocity) < 2) confidence *= 1.2;
+    //             confidence = Math.min(1.0, confidence);
                 
-                if (confidence < minSnipeConfidence) {
-                    return null;
-                }
+    //             if (confidence < minSnipeConfidence) {
+    //                 return null;
+    //             }
                 
-                return new SnipeOpportunity(enemy, (int)Math.round(newTotalTime), 
-                    power, aimAngle, (int)Math.ceil(newTotalTime), confidence);
-            }
+    //             return new SnipeOpportunity(enemy, (int)Math.round(newTotalTime), 
+    //                 power, aimAngle, (int)Math.ceil(newTotalTime), confidence);
+    //         }
             
-            totalTime = newTotalTime;
+    //         totalTime = newTotalTime;
             
-            int wholeTurns = (int) Math.floor(totalTime);
-            double fraction = totalTime - wholeTurns;
+    //         int wholeTurns = (int) Math.floor(totalTime);
+    //         double fraction = totalTime - wholeTurns;
             
-            if (wholeTurns < predictionFrames && enemy.predictedPositions[wholeTurns] != null) {
-                targetPos = enemy.predictedPositions[wholeTurns];
-                if (fraction > 0.1 && wholeTurns + 1 < predictionFrames && 
-                    enemy.predictedPositions[wholeTurns + 1] != null) {
-                    Point2D.Double next = enemy.predictedPositions[wholeTurns + 1];
-                    targetPos = new Point2D.Double(
-                        targetPos.x + (next.x - targetPos.x) * fraction,
-                        targetPos.y + (next.y - targetPos.y) * fraction
-                    );
-                }
-            } else {
-                double heading = Math.toRadians(enemy.heading);
-                targetPos = new Point2D.Double(
-                    enemy.position.x + enemy.velocity * Math.sin(heading) * totalTime,
-                    enemy.position.y + enemy.velocity * Math.cos(heading) * totalTime
-                );
-            }
-        }
+    //         if (wholeTurns < predictionFrames && enemy.predictedPositions[wholeTurns] != null) {
+    //             targetPos = enemy.predictedPositions[wholeTurns];
+    //             if (fraction > 0.1 && wholeTurns + 1 < predictionFrames && 
+    //                 enemy.predictedPositions[wholeTurns + 1] != null) {
+    //                 Point2D.Double next = enemy.predictedPositions[wholeTurns + 1];
+    //                 targetPos = new Point2D.Double(
+    //                     targetPos.x + (next.x - targetPos.x) * fraction,
+    //                     targetPos.y + (next.y - targetPos.y) * fraction
+    //                 );
+    //             }
+    //         } else {
+    //             double heading = Math.toRadians(enemy.heading);
+    //             targetPos = new Point2D.Double(
+    //                 enemy.position.x + enemy.velocity * Math.sin(heading) * totalTime,
+    //                 enemy.position.y + enemy.velocity * Math.cos(heading) * totalTime
+    //             );
+    //         }
+    //     }
         
-        return null;
-    }
+    //     return null;
+    // }
     
-    private static class SnipeOpportunity {
-        EnemyBot target;
-        int estimatedTurns;
-        double power;
-        double aimAngle;
-        int turnsToHit;
-        double confidence;
+    // private static class SnipeOpportunity {
+    //     EnemyBot target;
+    //     int estimatedTurns;
+    //     double power;
+    //     double aimAngle;
+    //     int turnsToHit;
+    //     double confidence;
         
-        SnipeOpportunity(EnemyBot target, int estimatedTurns, double power, 
-                        double aimAngle, int turns, double confidence) {
-            this.target = target;
-            this.estimatedTurns = estimatedTurns;
-            this.power = power;
-            this.aimAngle = aimAngle;
-            this.turnsToHit = turns;
-            this.confidence = confidence;
-        }
+    //     SnipeOpportunity(EnemyBot target, int estimatedTurns, double power, 
+    //                     double aimAngle, int turns, double confidence) {
+    //         this.target = target;
+    //         this.estimatedTurns = estimatedTurns;
+    //         this.power = power;
+    //         this.aimAngle = aimAngle;
+    //         this.turnsToHit = turns;
+    //         this.confidence = confidence;
+    //     }
         
-        boolean isBetterThan(SnipeOpportunity other) {
-            // Prefer higher power for close shots
-            if (this.turnsToHit <= 10 && other.turnsToHit <= 10) {
-                if (this.power > other.power) return true;
-                if (this.power < other.power) return false;
-            }
+    //     boolean isBetterThan(SnipeOpportunity other) {
+    //         // Prefer higher power for close shots
+    //         if (this.turnsToHit <= 10 && other.turnsToHit <= 10) {
+    //             if (this.power > other.power) return true;
+    //             if (this.power < other.power) return false;
+    //         }
             
-            if (this.turnsToHit < other.turnsToHit) return true;
-            if (this.turnsToHit > other.turnsToHit) return false;
-            if (this.power > other.power) return true;
-            if (this.power < other.power) return false;
-            return this.target.energy < other.target.energy;
-        }
-    }
+    //         if (this.turnsToHit < other.turnsToHit) return true;
+    //         if (this.turnsToHit > other.turnsToHit) return false;
+    //         if (this.power > other.power) return true;
+    //         if (this.power < other.power) return false;
+    //         return this.target.energy < other.target.energy;
+    //     }
+    // }
     
-    private void attemptSnipe() {
-        if (getGunHeat() > 0 || currTarget == null) {
-            return;
-        }
+    // private void attemptSnipe() {
+    //     if (getGunHeat() > 0 || currTarget == null) {
+    //         return;
+    //     }
         
-        // Don't shoot if we're too low on energy (except in kill mode)
-        if (getEnergy() < 1.0 && currState != MovementState.KILL_MODE) {
-            return;
-        }
+    //     // Don't shoot if we're too low on energy (except in kill mode)
+    //     if (getEnergy() < 1.0 && currState != MovementState.KILL_MODE) {
+    //         return;
+    //     }
         
-        SnipeOpportunity snipe = calculateBestSnipe(currTarget);
+    //     SnipeOpportunity snipe = calculateBestSnipe(currTarget);
         
-        if (snipe != null && snipe.confidence >= minSnipeConfidence) {
-            if (getEnergy() < snipe.power) {
-                return;
-            }
+    //     if (snipe != null && snipe.confidence >= minSnipeConfidence) {
+    //         if (getEnergy() < snipe.power) {
+    //             return;
+    //         }
             
-            double gunTurn = Utils.normalRelativeAngle(snipe.aimAngle - getGunHeadingRadians());
-            setTurnGunRightRadians(gunTurn);
+    //         double gunTurn = Utils.normalRelativeAngle(snipe.aimAngle - getGunHeadingRadians());
+    //         setTurnGunRightRadians(gunTurn);
             
-            if (Math.abs(getGunTurnRemainingRadians()) < Math.toRadians(10)) {
-                setFire(snipe.power);
-                out.println(String.format("FIRE: %s | P:%.1f | D:%d | C:%.2f",
-                    snipe.target.name, snipe.power, (int)currTarget.distance, snipe.confidence));
-            }
-        } else if (currTarget.position != null && getEnergy() > 1.0) {
-            // Fallback: simple targeting with distance-based power
-            double aimAngle = Math.atan2(
-                currTarget.position.x - getX(),
-                currTarget.position.y - getY()
-            );
-            double gunTurn = Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians());
-            setTurnGunRightRadians(gunTurn);
+    //         if (Math.abs(getGunTurnRemainingRadians()) < Math.toRadians(10)) {
+    //             setFire(snipe.power);
+    //             out.println(String.format("FIRE: %s | P:%.1f | D:%d | C:%.2f",
+    //                 snipe.target.name, snipe.power, (int)currTarget.distance, snipe.confidence));
+    //         }
+    //     } else if (currTarget.position != null && getEnergy() > 1.0) {
+    //         // Fallback: simple targeting with distance-based power
+    //         double aimAngle = Math.atan2(
+    //             currTarget.position.x - getX(),
+    //             currTarget.position.y - getY()
+    //         );
+    //         double gunTurn = Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians());
+    //         setTurnGunRightRadians(gunTurn);
             
-            if (Math.abs(getGunTurnRemainingRadians()) < Math.toRadians(15)) {
-                double power = calculateOptimalPower(currTarget.distance);
-                setFire(power);
-            }
-        }
-    }
+    //         if (Math.abs(getGunTurnRemainingRadians()) < Math.toRadians(15)) {
+    //             double power = calculateOptimalPower(currTarget.distance);
+    //             setFire(power);
+    //         }
+    //     }
+    // }
     
     private EnemyBot findKillTarget() {
         EnemyBot best = null;
