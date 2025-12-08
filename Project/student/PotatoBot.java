@@ -37,6 +37,7 @@ public class PotatoBot extends TeamRobot {
 
     // Snipe Score Heuristics
     private static double tresholdScore = 0.01;
+    private static int maxScanAge = 3;
     
     // Movement parameters
     private static final double wallMargin = 120.0;
@@ -919,36 +920,7 @@ public class PotatoBot extends TeamRobot {
     }
 
 
-
-    // iterate all newly scanned robot's this turn to find all the snipes we could make if firing this turn
-    private void getSnipes(int maxTurns, int maxPower){
-            // Check all newly scanned robots for snipe opportunities
-
-            // Get Position Predictions
-            // For each enemy scanned
-                // For int i in 0 to max turns
-                    // get next enemy position
-            
-            // For each enemy scanned
-                // For power in maxPower to minPower in increments -powerIncrement
-                    // for int i in 0 to max turns
-                        // if snipable
-                                // array.add new snipe(power, i, enemy)
-                                // break
-
-
-        
-        // returns num Turns, and confidence score
-        // Get predicted enemy position after firing this turn
-        // enemy.getPositions(N)
-
-        // Returns a list of TurnNumber, Power 
-        // Turn number is risk, power is reward, so we look at risk rewards to choose best snipe
-
-    }
-
-
-    // Sniping
+    // ========== SNIPING SYSTEM ==========
 
     private static double getBulletSpeed(double power){
         return 20.0 - 3.0 * power;
@@ -956,28 +928,25 @@ public class PotatoBot extends TeamRobot {
 
     // Check what power is needed to hit target at distance in n turns
     private static Double getPowerForSnipe(double distance, int numTurns){
-        if(numTurns <=0){return null;}
+        if(numTurns <= 0){ return null; }
 
         double speed = distance / numTurns;
-
         double power = (20.0 - speed) / 3.0;
 
         if(power < MIN_BULLET_POWER || power > MAX_BULLET_POWER){
             return null;
         }
 
-        return Math.round(power * 10)/10.0;
+        return Math.round(power * 10) / 10.0;
     }
-
 
     private int gunTurnTime(double targetAngle){
-        double turnNeeded = Math.abs(Utils.normalRelativeAngle(targetAngle - getGunHeading()));
+        double turnNeeded = Math.abs(Utils.normalRelativeAngle(targetAngle - getGunHeadingRadians()));
         double gunTurnRate = Math.toRadians(20);  // 20 deg/turn
         return (int) Math.ceil(turnNeeded / gunTurnRate);
-
     }
 
-        private boolean isTurnPossible(double distance, int turn) {
+    private boolean isTurnPossible(double distance, int turn) {
         // Minimum time: fastest bullet (power 0.1, speed 19.7)
         double minTime = distance / 19.7;
         // Maximum time: slowest bullet (power 3.0, speed 11.0)
@@ -992,25 +961,22 @@ public class PotatoBot extends TeamRobot {
     private ArrayList<Snipe> getSnipesForEnemy(EnemyBot enemy, int maxTurns) {
         ArrayList<Snipe> snipes = new ArrayList<>();
         
-        // Skip stale data
-        // if (currentTime - enemy.lastScanTime > 2) {
-        //     return snipes;
-        // }
-        
         // Skip dead enemies
         if (enemy.energy <= 0) {
             return snipes;
         }
+        
         Point2D.Double myPos = new Point2D.Double(getX(), getY());
+        
         // Cache distances for this tick
         enemy.calcDistances(myPos);
         
         // For each future turn, calculate if we can hit
         for (int turn = 1; turn <= maxTurns && turn < enemy.predictedPositions.length; turn++) {
-            Point2D.Double targetPos = enemy.predictedPositions[turn];
+            Point2D.Double targetPos = enemy.predictedPositions[turn - 1];
             if (targetPos == null) continue;
             
-            double distance = enemy.predictedDistances[turn];
+            double distance = enemy.predictedDistances[turn - 1];
             
             // Quick rejection: is this turn even reachable?
             if (!isTurnPossible(distance, turn)) {
@@ -1042,54 +1008,17 @@ public class PotatoBot extends TeamRobot {
                 continue;  // Rounding error made this invalid
             }
             
-            // == Skip Confidence Calcs ==
-            // Calculate confidence
-            // double confidence = enemy.predictionConfidence[turn];
-            // if (gunTurnTime > 2) {
-            //     confidence *= 0.9;
-            // }
-            
-            // Skip low confidence shots
-            // if (confidence < 0.1) {
-            //     continue;
-            // }
-            
             // Valid snipe found
             snipes.add(new Snipe(power, turn, enemy));
-            // snipes.add(new Snipe(power, turn, enemy, confidence, aimAngle, targetPos));
         }
         
         return snipes;
     }
 
     /**
-     * Get all snipe opportunities - evaluates all enemies
-     * O(enemies × maxTurns)
-     */
-    public ArrayList<Snipe> getSnipes(HashMap<String, EnemyBot> enemies, int maxTurns) {
-        ArrayList<Snipe> snipes = new ArrayList<>();
-        
-        // Can't fire if gun is hot
-        if (getGunHeat() > 0) {
-            return snipes;
-        }
-        
-        // Update cached values
-        updateCache();
-        
-        maxTurns = Math.min(maxTurns, maxPredictFrames);
-        
-        for (EnemyBot enemy : enemies.values()) {
-            snipes.addAll(getSnipesForEnemy(enemy, maxTurns));
-        }
-        
-        return snipes;
-    }
-
-     /**
      * Choose the best snipe from available options
      */
-    public Snipe chooseBestSnipe(ArrayList<Snipe> snipes) {
+    private Snipe chooseBestSnipe(ArrayList<Snipe> snipes) {
         if (snipes.isEmpty()) {
             return null;
         }
@@ -1100,56 +1029,60 @@ public class PotatoBot extends TeamRobot {
         for (Snipe snipe : snipes) {
             float score = snipe.getScore();
             
-            // // Additional strategic adjustments
-            // double damage = 4 * snipe.power + Math.max(0, 2 * (snipe.power - 1));
-            // if (damage >= snipe.enemyHP) {
-            //     score *= 1.5;  // Kill shot bonus
-            // }
-            
-            // if (snipe.numTurns > 15) {
-            //     score *= 0.7;  // Long shot penalty
-            // }
-            
-            // // Tiebreaker: prefer higher power
-            // score += (float)(snipe.power * 0.01);
-            
             if (score > bestScore) {
                 bestScore = score;
                 best = snipe;
             }
         }
         
-        // Check if best score above min treshold
+        // Check if best score above min threshold
         if (best != null && bestScore < tresholdScore) {
             return null;
         }
         
         return best;
     }
-    
+
     /**
-     * Convenience: find and return best snipe in one call
+     * Check for snipe opportunities and fire if good shot available
      */
-    public Snipe getBestSnipe(HashMap<String, EnemyBot> enemies, int maxTurns) {
-        ArrayList<Snipe> snipes = getSnipes(enemies, maxTurns);
-        return chooseBestSnipe(snipes);
+    private void snipeCheck() {
+        if (getGunHeat() > 0) {
+            return;
+        }
+        
+        ArrayList<Snipe> snipes = new ArrayList<>();
+        
+        for (EnemyBot enemy : enemies.values()) {
+            // Only consider recently scanned enemies
+            if (getTime() - enemy.turnLastSeen > maxScanAge) {
+                continue;
+            }
+            snipes.addAll(getSnipesForEnemy(enemy, maxPredictFrames));
+        }
+        
+        Snipe best = chooseBestSnipe(snipes);
+        
+        if (best == null) {
+            return;
+        }
+        
+        // Aim at target position
+        Point2D.Double targetPos = best.enemy.predictedPositions[best.numTurns - 1];
+        if (targetPos == null) {
+            return;
+        }
+        
+        double aimAngle = Math.atan2(targetPos.x - getX(), targetPos.y - getY());
+        double turnAngle = Utils.normalRelativeAngle(aimAngle - getGunHeadingRadians());
+        setTurnGunRightRadians(turnAngle);
+        
+        // Fire if gun is aligned
+        if (Math.abs(getGunTurnRemainingRadians()) < 0.05) {
+            setFire(best.power);
+        }
     }
 
-    
-    
-
-    // From all the snipes available pick the best one if any
-    // private void chooseBestSnipe(Utils.ArrayList<Snipe> snipes){
-        // Choose the best snipe
-        // snipe: Turns, predConfidence,Power, targetHP
-        // Turns for that shot to land
-        // predConfidence: proportional to turns and proportional to how much the historical behvaiour of the robot has been
-        // power: power of the shot
-        // targetHP: Best for Low HP, since we can engage in kill mode
-        // return;
-    // }
-    
-    
     private EnemyBot findKillTarget() {
         EnemyBot best = null;
         double lowestEnergy = lowEnergy + 1;
